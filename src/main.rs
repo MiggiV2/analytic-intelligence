@@ -30,7 +30,7 @@ fn main() {
     if let Ok(res) = resolver.mx_lookup(domain) {
         if let Some(mx) = res.iter().next() {
             let mail = mx.to_string();
-            println!("E-Mail Server: {}\n", mail);
+            println!("📧 E-Mail Server: {}\n", mail);
         }
     }
 
@@ -50,7 +50,19 @@ fn main() {
             }
         }
         for domain in domains {
-            println!("- {} {}", domain, check_web_status(&domain));
+            let status = check_web_status(&domain);
+            let icon;
+            if status.online {
+                icon = "✅";
+            } else {
+                icon = "❌";
+            }
+            println!("{} {}", icon, domain,);
+            if let Some(title) = status.title {
+                println!("↪️ {}", title);
+            } else {
+                println!();
+            }
         }
         println!();
     }

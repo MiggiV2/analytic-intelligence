@@ -3,7 +3,28 @@ use std::time::Duration;
 static CHROME_USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36";
 // Source: https://www.useragents.me/#latest-windows-desktop-useragents
 
-pub fn check_web_status(domain: &String) -> String {
+pub struct Status {
+    pub online: bool,
+    pub title: Option<String>,
+}
+
+impl Status {
+    pub fn from(online: bool, title: String) -> Status {
+        Self {
+            online,
+            title: Some(title),
+        }
+    }
+
+    pub fn from_online(online: bool) -> Status {
+        Self {
+            online,
+            title: None,
+        }
+    }
+}
+
+pub fn check_web_status(domain: &String) -> Status {
     let url = format!("https://{}", domain);
     let client = reqwest::blocking::Client::new();
     // println!("Checking {}", url);
@@ -19,14 +40,18 @@ pub fn check_web_status(domain: &String) -> String {
             if let Ok(text) = response.text() {
                 let title = extract_html_title(text);
                 if let Some(title) = title {
-                    return format!("✅\n↪️ {}", title);
+                    // return format!("✅\n↪️ {}", title);
+                    return Status::from(true, title);
                 }
             }
-            return String::from("✅");
+            // return String::from("✅");
+            return Status::from_online(true);
         }
-        return response.status().to_string();
+        // return response.status().to_string();
+        return Status::from(true, response.status().to_string());
     }
-    String::from("❌")
+    // String::from("❌")
+    Status::from_online(false)
 }
 
 fn extract_html_title(html: String) -> Option<String> {
