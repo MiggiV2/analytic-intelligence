@@ -1,7 +1,15 @@
+mod crt;
+mod ip_helper;
+mod status;
+
 use std::collections::{HashMap, HashSet};
 use std::env;
+use std::net::IpAddr;
 use dns_lookup::lookup_host;
 use serde::Deserialize;
+use crate::crt::get_subdomains;
+use crate::ip_helper::is_local_ip;
+use crate::status::check_web_status;
 
 #[derive(Deserialize)]
 struct Cert {
@@ -28,24 +36,6 @@ fn main() {
     }
 }
 
-fn check_web_status(domain: &String) -> String {
-    let url = format!("https://{}", domain);
-    let client = reqwest::blocking::Client::new();
-    // println!("Checking {}", url);
-    
-    let response = client.head(&url).send();
-    if response.is_err() {
-        return String::from("?");
-    }
-    
-    let response= response.unwrap();
-    // println!("Status: {}", response.status());
-    if response.status().is_success() {
-       return String::from( "✅");
-    }
-    response.status().to_string()
-}
-
 fn build_server_map(sub_domains: HashSet<String>) -> HashMap<String, Vec<String>> {
     let mut servers = HashMap::new();
     for domain_name in sub_domains {
@@ -54,36 +44,15 @@ fn build_server_map(sub_domains: HashSet<String>) -> HashMap<String, Vec<String>
             continue;
         }
 
-        let ip = ips.unwrap().first().unwrap().to_string();
-        servers.entry(ip).or_insert_with(Vec::new).push(domain_name);
+        let ips = ips.unwrap();
+        if let Some(ip) = ips.first() {
+            // Skip local IP addresses
+            if is_local_ip(ip) {
+                println!("Skipping local IP {} for domain {}", ip, domain_name);
+                continue;
+            }
+            servers.entry(ip.to_string()).or_insert_with(Vec::new).push(domain_name);
+        }
     }
     servers
-}
-
-fn get_subdomains(args: Vec<String>) -> HashSet<String> {
-    let url = format!("https://crt.sh/json?q={}&exclude=expired", args.get(1).unwrap());
-    let body = reqwest::blocking::get(url)
-        .unwrap()
-        .json::<Vec<Cert>>();
-
-    let mut sub_domains = HashSet::new();
-
-    for cert in body.unwrap() {
-        if !cert.common_name.is_empty() {
-            sub_domains.insert(cert.common_name);
-        }
-        if !cert.name_value.is_empty() {
-            if cert.name_value.contains("\n") {
-                for name in cert.name_value.split("\n") {
-                    if name.starts_with("*.") {
-                        continue;
-                    }
-                    sub_domains.insert(name.trim().to_string());
-                }
-            } else {
-                sub_domains.insert(cert.name_value);
-            }
-        }
-    }
-    sub_domains
 }
