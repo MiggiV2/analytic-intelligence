@@ -1,25 +1,26 @@
 mod crt;
 mod ip_helper;
+mod ipinfo;
 mod status;
 
-use std::collections::{HashMap, HashSet};
-use std::env;
-use std::net::IpAddr;
-use dns_lookup::lookup_host;
-use serde::Deserialize;
 use crate::crt::get_subdomains;
 use crate::ip_helper::is_local_ip;
+use crate::ipinfo::get_ip_info;
 use crate::status::check_web_status;
+use dns_lookup::lookup_host;
+use serde::Deserialize;
+use std::collections::{HashMap, HashSet};
+use std::env;
 
 #[derive(Deserialize)]
 struct Cert {
-    common_name:String,
+    common_name: String,
     name_value: String,
 }
 
 fn main() {
     let args: Vec<String> = env::args().collect();
-    if args.len() < 2{
+    if args.len() < 2 {
         panic!("Please start the program with an DOMAIN as argument");
     }
 
@@ -28,9 +29,18 @@ fn main() {
     let servers = build_server_map(sub_domains);
 
     for (ip, domains) in servers {
-        println!("IP: {}", ip);
+        print!("IP: {} ", &ip);
+        let ip_info = get_ip_info(&ip);
+        match ip_info {
+            Ok(info) => {
+                println!("({}, {}, {})", info.org, info.country, info.city);
+            }
+            Err(err) => {
+                println!("{}", err);
+            }
+        }
         for domain in domains {
-            println!("- {} -> {}", domain, check_web_status(&domain));
+            println!("- {} {}", domain, check_web_status(&domain));
         }
         println!();
     }
@@ -51,7 +61,10 @@ fn build_server_map(sub_domains: HashSet<String>) -> HashMap<String, Vec<String>
                 println!("Skipping local IP {} for domain {}", ip, domain_name);
                 continue;
             }
-            servers.entry(ip.to_string()).or_insert_with(Vec::new).push(domain_name);
+            servers
+                .entry(ip.to_string())
+                .or_insert_with(Vec::new)
+                .push(domain_name);
         }
     }
     servers

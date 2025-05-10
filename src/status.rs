@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 static CHROME_USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36";
 // Source: https://www.useragents.me/#latest-windows-desktop-useragents
 
@@ -6,23 +8,25 @@ pub fn check_web_status(domain: &String) -> String {
     let client = reqwest::blocking::Client::new();
     // println!("Checking {}", url);
 
-    let response = client.get(&url)
+    let response = client
+        .get(&url)
+        .timeout(Duration::from_secs(10))
         .header("User-Agent", CHROME_USER_AGENT)
         .send();
-    
+
     if let Ok(response) = response {
         if response.status().is_success() {
             if let Ok(text) = response.text() {
                 let title = extract_html_title(text);
                 if let Some(title) = title {
-                    return format!("✅\n↪️ {}",title);
+                    return format!("✅\n↪️ {}", title);
                 }
             }
-            return String::from( "✅");
+            return String::from("✅");
         }
-        return response.status().to_string()
+        return response.status().to_string();
     }
-    String::from("?")    
+    String::from("❌")
 }
 
 fn extract_html_title(html: String) -> Option<String> {
