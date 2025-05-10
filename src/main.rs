@@ -7,10 +7,11 @@ use crate::crt::get_subdomains;
 use crate::ip_helper::is_local_ip;
 use crate::ipinfo::get_ip_info;
 use crate::status::check_web_status;
-use dns_lookup::lookup_host;
 use serde::Deserialize;
 use std::collections::{HashMap, HashSet};
 use std::env;
+use trust_dns_resolver::config::{ResolverConfig, ResolverOpts};
+use trust_dns_resolver::Resolver;
 
 #[derive(Deserialize)]
 struct Cert {
@@ -24,8 +25,17 @@ fn main() {
         panic!("Please start the program with an DOMAIN as argument");
     }
 
+    let domain = args.get(1).unwrap();
+    let resolver = Resolver::new(ResolverConfig::default(), ResolverOpts::default()).unwrap();
+    if let Ok(res) = resolver.mx_lookup(domain) {
+        if let Some(mx) = res.iter().next() {
+            let mail = mx.to_string();
+            println!("E-Mail Server: {}\n", mail);
+        }
+    }
+
     // ToDo: Add unknown 2nd level domains in loop
-    let sub_domains = get_subdomains(args);
+    let sub_domains = get_subdomains(domain);
     let servers = build_server_map(sub_domains);
 
     for (ip, domains) in servers {
@@ -48,17 +58,18 @@ fn main() {
 
 fn build_server_map(sub_domains: HashSet<String>) -> HashMap<String, Vec<String>> {
     let mut servers = HashMap::new();
+    let resolver = Resolver::new(ResolverConfig::default(), ResolverOpts::default()).unwrap();
     for domain_name in sub_domains {
-        let ips = lookup_host(&domain_name);
+        let ips = resolver.lookup_ip(&domain_name);
         if ips.is_err() {
             continue;
         }
 
         let ips = ips.unwrap();
-        if let Some(ip) = ips.first() {
+        if let Some(ip) = ips.iter().next() {
             // Skip local IP addresses
-            if is_local_ip(ip) {
-                println!("Skipping local IP {} for domain {}", ip, domain_name);
+            if is_local_ip(&ip) {
+                println!("Skipping local IP {} for domain {}", &ip, domain_name);
                 continue;
             }
             servers

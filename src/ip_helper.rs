@@ -12,7 +12,7 @@ pub fn is_local_ip(ip: &IpAddr) -> bool {
                 (ipv4.octets()[0] == 192 && ipv4.octets()[1] == 168) || // 192.168.0.0/16
                 // Link-local addresses
                 (ipv4.octets()[0] == 169 && ipv4.octets()[1] == 254) // 169.254.0.0/16
-        },
+        }
         IpAddr::V6(ipv6) => {
             ipv6.is_loopback() ||
                 ipv6.is_unspecified() ||

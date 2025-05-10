@@ -1,11 +1,9 @@
-use std::collections::HashSet;
 use crate::Cert;
+use std::collections::HashSet;
 
-pub fn get_subdomains(args: Vec<String>) -> HashSet<String> {
-    let url = format!("https://crt.sh/json?q={}&exclude=expired", args.get(1).unwrap());
-    let body = reqwest::blocking::get(url)
-        .unwrap()
-        .json::<Vec<Cert>>();
+pub fn get_subdomains(domain: &String) -> HashSet<String> {
+    let url = format!("https://crt.sh/json?q={}&exclude=expired", domain);
+    let body = reqwest::blocking::get(url).unwrap().json::<Vec<Cert>>();
 
     let mut sub_domains = HashSet::new();
 
