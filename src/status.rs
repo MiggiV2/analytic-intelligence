@@ -1,3 +1,4 @@
+use reqwest::blocking::{Client, Response};
 use std::time::Duration;
 
 static CHROME_USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36";
@@ -9,24 +10,32 @@ pub struct Status {
 }
 
 impl Status {
-    pub fn from(online: bool, title: String) -> Status {
-        Self {
-            online,
-            title: Some(title),
-        }
-    }
-
-    pub fn from_online(online: bool) -> Status {
+    pub fn new(online: bool) -> Status {
         Self {
             online,
             title: None,
         }
     }
+
+    pub fn online_with_title(title: String) -> Status {
+        Self {
+            online: true,
+            title: Some(title),
+        }
+    }
+
+    pub fn offline_with_title(title: String) -> Status {
+        Self {
+            online: false,
+            title: Some(title),
+        }
+    }
 }
 
-pub fn check_web_status(domain: &String) -> Status {
+// toDo: Async
+pub fn check_web_status(domain: &str) -> Status {
     let url = format!("https://{}", domain);
-    let client = reqwest::blocking::Client::new();
+    let client = Client::new();
 
     let response = client
         .get(&url)
@@ -34,19 +43,29 @@ pub fn check_web_status(domain: &String) -> Status {
         .header("User-Agent", CHROME_USER_AGENT)
         .send();
 
-    if let Ok(response) = response {
-        if response.status().is_success() {
-            if let Ok(text) = response.text() {
-                let title = extract_html_title(text);
-                if let Some(title) = title {
-                    return Status::from(true, title);
-                }
-            }
-            return Status::from_online(true);
-        }
-        return Status::from(true, response.status().to_string());
+    match response {
+        Ok(response) => handle_response(response),
+        Err(error) => Status::offline_with_title(error.to_string()),
     }
-    Status::from_online(false)
+}
+
+fn handle_response(response: Response) -> Status {
+    let status_code = response.status();
+
+    if status_code.is_success() {
+        if let Ok(text) = response.text() {
+            if let Some(title) = extract_html_title(text) {
+                return Status::online_with_title(title);
+            }
+        }
+        Status::new(true)
+    } else if status_code.is_client_error() {
+        Status::offline_with_title(format!("Client error: {}", status_code))
+    } else if status_code.is_server_error() {
+        Status::offline_with_title(format!("Server error: {}", status_code))
+    } else {
+        Status::offline_with_title(status_code.to_string())
+    }
 }
 
 fn extract_html_title(html: String) -> Option<String> {
