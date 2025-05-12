@@ -26,7 +26,7 @@ fn main() {
     }
 
     let domain = args.get(1).unwrap();
-    let resolver = Resolver::new(ResolverConfig::default(), ResolverOpts::default()).unwrap();
+    let resolver = Resolver::new(ResolverConfig::cloudflare_tls(), ResolverOpts::default()).unwrap();
     if let Ok(res) = resolver.mx_lookup(domain) {
         if let Some(mx) = res.iter().next() {
             let mail = mx.to_string();
@@ -70,25 +70,31 @@ fn main() {
 
 fn build_server_map(sub_domains: HashSet<String>) -> HashMap<String, Vec<String>> {
     let mut servers = HashMap::new();
-    let resolver = Resolver::new(ResolverConfig::default(), ResolverOpts::default()).unwrap();
+    let resolver = Resolver::new(ResolverConfig::cloudflare_tls(), ResolverOpts::default()).unwrap();
     for domain_name in sub_domains {
         let ips = resolver.lookup_ip(&domain_name);
-        if ips.is_err() {
-            continue;
+        let mut ip_addr = String::from("unknown");
+
+        match ips {
+            Ok(ips) => {
+                if let Some(ip) = ips.iter().next() {
+                    // Skip local IP addresses
+                    if is_local_ip(&ip) {
+                        println!("Skipping local IP {} for domain {}", &ip, domain_name);
+                        continue;
+                    }
+                    ip_addr = ip.to_string();
+                }
+            },
+            Err(err) => {
+                eprintln!("Failed to get IP {}", err);
+            }
         }
 
-        let ips = ips.unwrap();
-        if let Some(ip) = ips.iter().next() {
-            // Skip local IP addresses
-            if is_local_ip(&ip) {
-                println!("Skipping local IP {} for domain {}", &ip, domain_name);
-                continue;
-            }
-            servers
-                .entry(ip.to_string())
-                .or_insert_with(Vec::new)
-                .push(domain_name);
-        }
+        servers
+            .entry(ip_addr)
+            .or_insert_with(Vec::new)
+            .push(domain_name);
     }
     servers
 }

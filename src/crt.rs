@@ -6,6 +6,10 @@ pub fn get_subdomains(domain: &String) -> HashSet<String> {
     let body = reqwest::blocking::get(url).unwrap().json::<Vec<Cert>>();
 
     let mut sub_domains = HashSet::new();
+    
+    if let Err(err) = body {
+        panic!("crt.sh request failed -> {}\nStopping programm now...", err)
+    }
 
     for cert in body.unwrap() {
         if !cert.common_name.is_empty() {
