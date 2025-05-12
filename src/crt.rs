@@ -1,5 +1,11 @@
-use crate::Cert;
 use std::collections::HashSet;
+use serde::Deserialize;
+
+#[derive(Deserialize)]
+struct Cert {
+    common_name: String,
+    name_value: String,
+}
 
 pub fn get_subdomains(domain: &String) -> HashSet<String> {
     let url = format!("https://crt.sh/json?q={}&exclude=expired", domain);

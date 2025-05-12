@@ -27,7 +27,6 @@ impl Status {
 pub fn check_web_status(domain: &String) -> Status {
     let url = format!("https://{}", domain);
     let client = reqwest::blocking::Client::new();
-    // println!("Checking {}", url);
 
     let response = client
         .get(&url)
@@ -40,17 +39,13 @@ pub fn check_web_status(domain: &String) -> Status {
             if let Ok(text) = response.text() {
                 let title = extract_html_title(text);
                 if let Some(title) = title {
-                    // return format!("✅\n↪️ {}", title);
                     return Status::from(true, title);
                 }
             }
-            // return String::from("✅");
             return Status::from_online(true);
         }
-        // return response.status().to_string();
         return Status::from(true, response.status().to_string());
     }
-    // String::from("❌")
     Status::from_online(false)
 }
 
