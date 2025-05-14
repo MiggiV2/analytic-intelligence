@@ -15,6 +15,11 @@ logs (crt.sh), resolves their IP addresses, and verifies website availability.
 
 ## Installation
 
+### Download from release page
+
+You can download the latest compiled version for Linux_AMD64 and Windows_AMD64 from the release page.  
+-> https://code.mymiggi.de/Miggi/analytic-intelligence/releases
+
 ### Prerequisites
 
 - Rust and Cargo (latest stable version)
