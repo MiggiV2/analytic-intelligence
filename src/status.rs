@@ -1,8 +1,11 @@
-use reqwest::blocking::{Client, Response};
 use std::time::Duration;
+
+use reqwest::Client;
 
 static CHROME_USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36";
 // Source: https://www.useragents.me/#latest-windows-desktop-useragents
+
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 
 pub struct Status {
     pub online: bool,
@@ -32,37 +35,36 @@ impl Status {
     }
 }
 
-// toDo: Async
-pub fn check_web_status(domain: &str) -> Status {
-    let url = format!("https://{}", domain);
-    let client = Client::new();
+pub async fn check_web_status(domain: &str) -> Status {
+    let url = format!("https://{domain}");
 
-    let response = client
+    let response = Client::new()
         .get(&url)
-        .timeout(Duration::from_secs(10))
+        .timeout(REQUEST_TIMEOUT)
         .header("User-Agent", CHROME_USER_AGENT)
-        .send();
+        .send()
+        .await;
 
     match response {
-        Ok(response) => handle_response(response),
+        Ok(response) => handle_response(response).await,
         Err(error) => Status::offline_with_title(error.to_string()),
     }
 }
 
-fn handle_response(response: Response) -> Status {
+async fn handle_response(response: reqwest::Response) -> Status {
     let status_code = response.status();
 
     if status_code.is_success() {
-        if let Ok(text) = response.text() {
-            if let Some(title) = extract_html_title(text) {
-                return Status::online_with_title(title);
-            }
+        if let Ok(text) = response.text().await
+            && let Some(title) = extract_html_title(text)
+        {
+            return Status::online_with_title(title);
         }
         Status::new(true)
     } else if status_code.is_client_error() {
-        Status::offline_with_title(format!("Client error: {}", status_code))
+        Status::offline_with_title(format!("Client error: {status_code}"))
     } else if status_code.is_server_error() {
-        Status::offline_with_title(format!("Server error: {}", status_code))
+        Status::offline_with_title(format!("Server error: {status_code}"))
     } else {
         Status::offline_with_title(status_code.to_string())
     }

@@ -1,11 +1,14 @@
 # Analytic Intelligence
 
 A stealthy, server-friendly HTTPS scanner written in Rust that discovers subdomains through certificate transparency
-logs (crt.sh), resolves their IP addresses, and verifies website availability.
+logs (crt.sh, with SSLMate Cert Spotter as fallback), resolves their IP addresses, and verifies website availability -
+presented in a live-updating terminal UI.
 
 ## Features
 
-- **Subdomain Discovery**: Leverages crt.sh (Certificate Transparency logs) to find subdomains of target domains
+- **Subdomain Discovery**: Leverages certificate transparency logs to find subdomains of target domains
+  (crt.sh, falling back to SSLMate Cert Spotter when crt.sh is unavailable)
+- **Live TUI**: Terminal user interface built with ratatui - results stream in while the scan is running
 - **IP Resolution**: Maps discovered subdomains to their hosting IP addresses
 - **Website Status Checking**: Verifies availability and HTTP status of discovered websites
 - **Low Detection Profile**: Implements techniques to avoid being detected as a scanning tool
@@ -23,7 +26,6 @@ You can download the latest compiled version for Linux_AMD64 and Windows_AMD64 f
 ### Prerequisites
 
 - Rust and Cargo (latest stable version)
-- OpenSSL development libraries
 
 ### From Source
 
@@ -51,70 +53,44 @@ cargo install --git https://code.mymiggi.de/Miggi/analytic-intelligence.git
 analytic-intelligence example.com
 ```
 
-## Example Output
+The terminal switches into a full-screen TUI that shows the scan progress live:
 
 ```
-📧 E-Mail Server: 5 mail.tutanota.de.
-
-IP: 104.21.32.1 (AS13335 Cloudflare, Inc., US, San Francisco)
-✅ mymiggi.de
-↪ Michael Hainz | Developer & Gaming Enthusiast
-
-IP: 188.114.97.3 (AS13335 Cloudflare, Inc., DE, Munich)
-✅ ha1nz.de
-↪ Michael Hainz | Developer & Gaming Enthusiast
-
-IP: 104.21.64.1 (AS13335 Cloudflare, Inc., US, San Francisco)
-✅ www.mymiggi.de
-↪ Michael Hainz | Developer & Gaming Enthusiast
-
-IP: 104.21.96.1 (AS13335 Cloudflare, Inc., US, San Francisco)
-❌ analytics.mymiggi.de
-↪ Client error: 404 Not Found
-✅ code.mymiggi.de
-↪ Forgejo: Git with a cup of tea
-
-IP: 78.46.191.125 (AS24940 Hetzner Online GmbH, DE, Falkenstein)
-✅ social.mymiggi.de
-↪ Miggi's - GoToSocial
-❌ apis.mymiggi.de
-↪ Client error: 404 Not Found
-✅ ip2.mymiggi.de
-↪ Portainer
-✅ poll.mymiggi.de
-↪ Login
-❌ traefik-hetzner.mymiggi.de
-↪ Client error: 401 Unauthorized
-✅ monitor.mymiggi.de
-↪ Beszel
-✅ nextcloud.mymiggi.de
-↪ Login – Miggi&#039;s Cloud
-✅ sso.mymiggi.de
-↪ Login
-
-IP: 62.171.132.231 (AS51167 Contabo GmbH, DE, Frankfurt am Main)
-❌ traefik.mymiggi.de
-↪ Client error: 401 Unauthorized
-✅ plan.mymiggi.de
-↪ Plan | Player Analytics
-
-IP: unknown
-❌ syncv3.mymiggi.de
-↪ error sending request for url (https://syncv3.mymiggi.de/)
-❌ demo.mymiggi.de
-↪ error sending request for url (https://demo.mymiggi.de/)
-
-IP: 185.205.69.10 (AS210909 Tutao GmbH, DE, Frankfurt am Main)
-❌ mta-sts.mymiggi.de
-↪ Client error: 404 Not Found
+┌ Scan ──────────────────────────────────────────────────────────────────────┐
+│ Analytic Intelligence  mymiggi.de                                           │
+│ Phase: Checking websites  -  30 subdomains via Cert Spotter                 │
+│ Mail server: 5 mail.tutanota.de.                                            │
+└─────────────────────────────────────────────────────────────────────────────┘
+███████████████████████████████████ checked 23 / 30 ██████████████████████████
+┌ Results (up 19 - down 4 - skipped 0) ────────────────────────────────────────┐
+│ State   Domain                    IP              Organization / Location   │
+│ UP      mymiggi.de               104.21.20.30    AS13335 Cloudflare, Inc.    │
+│ DOWN    traefik-hetzner.mymigg…  78.46.191.125  AS24940 Hetzner Online GmbH │
+│ ...                                                                         │
+└─────────────────────────────────────────────────────────────────────────────┘
+ q: quit  -  j/k or up/down: scroll  -  f: follow
 ```
+
+### Keybindings
+
+| Key             | Action                    |
+| --------------- | ------------------------- |
+| `q` / `Esc`     | Quit                      |
+| `j` / `Down`    | Scroll down               |
+| `k` / `Up`      | Scroll up                 |
+| `g` / `Home`    | Jump to the first row     |
+| `G` / `End`/`f` | Jump to the last row/follow |
 
 ## How It Works
 
 ### Subdomain Discovery
 
-Analytic Intelligence queries certificate transparency logs via crt.sh to discover subdomains. This method is passive
-and doesn't require sending traffic to the target domain, making it highly stealthy and efficient.
+Analytic Intelligence queries certificate transparency logs to discover subdomains. crt.sh is used as the primary
+source; if it is unavailable (which happens regularly), the tool automatically falls back to
+[SSLMate Cert Spotter](https://sslmate.com/certspotter) (keyless free tier, indexes 40+ CT logs, subdomains of any
+depth via `include_subdomains=true`, paginated via `after=<id>` with a conservative rate of one request per second).
+Both methods are passive and don't require sending traffic to the target domain, making them highly stealthy
+and efficient.
 
 ### IP Resolution
 

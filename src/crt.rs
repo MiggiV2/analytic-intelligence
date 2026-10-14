@@ -1,5 +1,9 @@
 use std::collections::HashSet;
+use std::time::Duration;
+
 use serde::Deserialize;
+
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
 
 #[derive(Deserialize)]
 struct Cert {
@@ -7,32 +11,34 @@ struct Cert {
     name_value: String,
 }
 
-pub fn get_subdomains(domain: &String) -> HashSet<String> {
-    let url = format!("https://crt.sh/json?q={}&exclude=expired", domain);
-    let body = reqwest::blocking::get(url).unwrap().json::<Vec<Cert>>();
+pub async fn get_subdomains(domain: &str) -> Result<HashSet<String>, String> {
+    let url = format!("https://crt.sh/json?q={domain}&exclude=expired");
+    let certs: Vec<Cert> = reqwest::Client::builder()
+        .timeout(REQUEST_TIMEOUT)
+        .build()
+        .map_err(|e| format!("failed to build client: {e}"))?
+        .get(url)
+        .send()
+        .await
+        .map_err(|e| format!("crt.sh request failed: {e}"))?
+        .json()
+        .await
+        .map_err(|e| format!("crt.sh response could not be parsed: {e}"))?;
 
     let mut sub_domains = HashSet::new();
-    
-    if let Err(err) = body {
-        panic!("crt.sh request failed -> {}\nStopping programm now...", err)
-    }
 
-    for cert in body.unwrap() {
+    for cert in certs {
         if !cert.common_name.is_empty() {
             sub_domains.insert(cert.common_name);
         }
         if !cert.name_value.is_empty() {
-            if cert.name_value.contains("\n") {
-                for name in cert.name_value.split("\n") {
-                    if name.starts_with("*.") {
-                        continue;
-                    }
-                    sub_domains.insert(name.trim().to_string());
+            for name in cert.name_value.split('\n') {
+                if name.starts_with("*.") {
+                    continue;
                 }
-            } else {
-                sub_domains.insert(cert.name_value);
+                sub_domains.insert(name.trim().to_string());
             }
         }
     }
-    sub_domains
+    Ok(sub_domains)
 }

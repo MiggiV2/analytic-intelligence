@@ -1,106 +1,110 @@
+use std::env;
+use std::io;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+use std::time::Duration;
+
+use crossterm::event::{self, Event as CrosstermEvent, KeyEvent, KeyEventKind};
+use ratatui::{backend::CrosstermBackend, Terminal};
+use tokio::sync::mpsc;
+
+mod app;
+mod certspotter;
 mod crt;
 mod ip_helper;
 mod ipinfo;
+mod scanner;
 mod status;
 
-use crate::crt::get_subdomains;
-use crate::ip_helper::is_local_ip;
-use crate::ipinfo::get_ip_info;
-use crate::status::check_web_status;
-use std::collections::{HashMap, HashSet};
-use std::env;
-use trust_dns_resolver::config::{ResolverConfig, ResolverOpts};
-use trust_dns_resolver::Resolver;
+use crate::app::App;
+use crate::scanner::ScanEvent;
 
-fn main() {
-    let domain = parse_arguments();
-    let resolver = create_resolver();
-
-    display_mail_servers(&domain, &resolver);
-
-    let sub_domains = get_subdomains(&domain);
-    let servers = build_server_map(sub_domains);
-
-    display_server_information(servers);
+enum UiEvent {
+    Scan(ScanEvent),
+    Key(KeyEvent),
 }
 
-fn parse_arguments() -> String {
+const REDRAW_INTERVAL: Duration = Duration::from_millis(100);
+const KEY_POLL_INTERVAL: Duration = Duration::from_millis(250);
+
+#[tokio::main]
+async fn main() -> io::Result<()> {
+    let domain = parse_arguments()?;
+    let (ui_tx, mut ui_rx) = mpsc::unbounded_channel::<UiEvent>();
+
+    // Scanner: sends events into a ScanEvent channel which gets forwarded to the UI channel
+    let (scan_tx, mut scan_rx) = mpsc::unbounded_channel::<ScanEvent>();
+    tokio::spawn(scanner::run_scan(domain.clone(), scan_tx));
+    let forward_tx = ui_tx.clone();
+    tokio::spawn(async move {
+        while let Some(event) = scan_rx.recv().await {
+            let _ = forward_tx.send(UiEvent::Scan(event));
+        }
+    });
+
+    // Keyboard input: crossterm's blocking event loop on a dedicated thread.
+    // The flag lets the loop exit shortly after the UI is done, otherwise the
+    // runtime shutdown would block forever waiting for this thread.
+    let quit_flag = Arc::new(AtomicBool::new(false));
+    let key_tx = ui_tx.clone();
+    let key_flag = Arc::clone(&quit_flag);
+    let key_task = tokio::task::spawn_blocking(move || loop {
+        if key_flag.load(Ordering::Relaxed) {
+            break;
+        }
+        if !event::poll(KEY_POLL_INTERVAL).unwrap_or(false) {
+            continue;
+        }
+        if let Ok(CrosstermEvent::Key(key)) = event::read()
+            && key.kind == KeyEventKind::Press
+            && key_tx.send(UiEvent::Key(key)).is_err()
+        {
+            break;
+        }
+    });
+
+    let mut terminal = ratatui::init();
+    let mut app = App::new(domain);
+    let result = run(&mut terminal, &mut app, &mut ui_rx).await;
+    ratatui::restore();
+    quit_flag.store(true, Ordering::SeqCst);
+    key_task.abort();
+    result
+}
+
+async fn run(
+    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+    app: &mut App,
+    ui_rx: &mut mpsc::UnboundedReceiver<UiEvent>,
+) -> io::Result<()> {
+    loop {
+        terminal.draw(|frame| app.render(frame))?;
+
+        match tokio::time::timeout(REDRAW_INTERVAL, ui_rx.recv()).await {
+            Ok(Some(UiEvent::Scan(event))) => app.handle_scan_event(event),
+            Ok(Some(UiEvent::Key(key))) => app.handle_key(key),
+            Ok(None) => break,
+            Err(_) => {} // redraw interval elapsed, no new events
+        }
+
+        if app.should_quit {
+            break;
+        }
+    }
+    Ok(())
+}
+
+fn parse_arguments() -> io::Result<String> {
     let args: Vec<String> = env::args().collect();
     if args.len() < 2 {
         eprintln!("Error: Please provide a domain name as argument");
         eprintln!("Usage: {} <domain>", args[0]);
         std::process::exit(1);
     }
-    args[1].clone()
-}
-
-fn display_mail_servers(domain: &str, resolver: &Resolver) {
-    if let Ok(res) = resolver.mx_lookup(domain) {
-        if let Some(mx) = res.iter().next() {
-            let mail = mx.to_string();
-            println!("📧 E-Mail Server: {}\n", mail);
-        }
+    let domain = args[1].clone();
+    if domain.is_empty() {
+        eprintln!("Error: The domain name must not be empty");
+        std::process::exit(1);
     }
-}
-
-fn display_server_information(servers: HashMap<String, Vec<String>>) {
-    for (ip, domains) in servers {
-        print!("IP: {} ", &ip);
-        let ip_info = get_ip_info(&ip);
-        match ip_info {
-            Ok(info) => {
-                println!("({}, {}, {})", info.org, info.country, info.city);
-            }
-            Err(err) => {
-                println!("{}", err);
-            }
-        }
-        for domain in domains {
-            let status = check_web_status(&domain);
-            let icon = if status.online { "✅" } else { "❌" };
-            println!("{} {}", icon, domain,);
-            if let Some(title) = status.title {
-                println!("↪️ {}", title);
-            } else {
-                println!();
-            }
-        }
-        println!();
-    }
-}
-
-fn create_resolver() -> Resolver {
-    let resolver_config = ResolverConfig::cloudflare_tls();
-    let resolver_opts = ResolverOpts::default();
-    Resolver::new(resolver_config, resolver_opts).expect("Failed to create DNS resolver")
-}
-
-fn build_server_map(sub_domains: HashSet<String>) -> HashMap<String, Vec<String>> {
-    let mut servers = HashMap::new();
-    let resolver = create_resolver();
-
-    for domain_name in sub_domains {
-        match resolver.lookup_ip(&domain_name) {
-            Ok(ips) => {
-                if let Some(ip) = ips.iter().next() {
-                    if is_local_ip(&ip) {
-                        println!("Skipping local IP {} for domain {}", &ip, domain_name);
-                        continue;
-                    }
-                    servers
-                        .entry(ip.to_string())
-                        .or_insert_with(Vec::new)
-                        .push(domain_name);
-                }
-            }
-            Err(err) => {
-                eprintln!("Failed to resolve domain {}: {}", domain_name, err);
-                servers
-                    .entry(String::from("unknown"))
-                    .or_insert_with(Vec::new)
-                    .push(domain_name);
-            }
-        }
-    }
-    servers
+    Ok(domain)
 }
