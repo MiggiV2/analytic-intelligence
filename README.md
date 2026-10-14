@@ -11,6 +11,14 @@ presented in a live-updating terminal UI.
 - **Live TUI**: Terminal user interface built with ratatui - results stream in while the scan is running
 - **IP Resolution**: Maps discovered subdomains to their hosting IP addresses
 - **Website Status Checking**: Verifies availability and HTTP status of discovered websites
+- **Reverse DNS**: Resolves the PTR record for every hosting IP (e.g. CDN edge or hosting server hostnames)
+- **TLS Certificate Analysis**: Reads the served certificate per host - issuer, days until expiry and
+  self-signed detection (skips chain validation on purpose: an invalid certificate is a finding, not an error)
+- **Security Header Check**: Scores how many of five recommended security headers are set
+  (HSTS, CSP, X-Frame-Options, X-Content-Type-Options, Referrer-Policy)
+- **Tech Detection**: Identifies common technologies from response headers and session cookie names
+  (nginx, Apache, IIS, PHP, ASP.NET, Next.js, Cloudflare, ...)
+- **Feature Toggles**: Every check can be switched on/off in the TUI while the scan is running (keys `1`-`4`)
 - **Low Detection Profile**: Implements techniques to avoid being detected as a scanning tool
 - **Server-Friendly Design**: Uses rate limiting and considerate scanning techniques to minimize impact on target
   servers
@@ -68,8 +76,12 @@ The terminal switches into a full-screen TUI that shows the scan progress live:
 │ DOWN    traefik-hetzner.mymigg…  78.46.191.125  AS24940 Hetzner Online GmbH │
 │ ...                                                                         │
 └─────────────────────────────────────────────────────────────────────────────┘
- q: quit  -  j/k or up/down: scroll  -  f: follow
+ q: quit  -  j/k: scroll  -  f: follow    toggle: 1:sec-hdrs 2:tls 3:tech 4:ptr
 ```
+
+With all features enabled the results table also shows a PTR column (reverse DNS per IP),
+a TLS column (issuer abbreviation + days until expiry, `SS` = self-signed, `expired`),
+a Tech column (detected technologies) and a Sec column (present security headers, e.g. `3/5`).
 
 ### Keybindings
 
@@ -80,6 +92,14 @@ The terminal switches into a full-screen TUI that shows the scan progress live:
 | `k` / `Up`      | Scroll up                 |
 | `g` / `Home`    | Jump to the first row     |
 | `G` / `End`/`f` | Jump to the last row/follow |
+| `1`             | Toggle security header column |
+| `2`             | Toggle TLS certificate analysis |
+| `3`             | Toggle tech detection column |
+| `4`             | Toggle reverse DNS column |
+
+Toggles take effect while the scan is running: turning off TLS analysis (`2`) or reverse DNS (`4`)
+skips their network requests from that point on. Security headers and tech detection piggyback on
+the HTTP responses the scan fetches anyway, so their toggles only hide the corresponding columns.
 
 ## How It Works
 
@@ -95,7 +115,8 @@ and efficient.
 ### IP Resolution
 
 The tool performs DNS lookups on discovered subdomains to determine their hosting IP addresses. The resolver is
-configured to use multiple DNS providers and implements caching to reduce lookup volume.
+configured to use multiple DNS providers and implements caching to reduce lookup volume. For every unique hosting
+IP a reverse DNS (PTR) lookup is performed, which often reveals the hosting provider's server hostname.
 
 ### Availability Checking
 
@@ -106,6 +127,9 @@ requests:
 - Target the same IP strictly one after another, with a randomized delay of 0.5 to 1.8 seconds between requests,
   so rate-based firewall rules do not flag the scan
 - Check different IPs in parallel, capped at 10 IPs at a time
+
+Each response is additionally analyzed for security headers and technology hints, and every resolved host gets a
+TLS probe that reads the served certificate (issuer, expiry, self-signed) without validating the chain.
 
 ## Contributing
 

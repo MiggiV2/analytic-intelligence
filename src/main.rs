@@ -13,11 +13,13 @@ mod certspotter;
 mod crt;
 mod ip_helper;
 mod ipinfo;
+mod ptr;
 mod scanner;
 mod status;
+mod tls;
 
 use crate::app::App;
-use crate::scanner::ScanEvent;
+use crate::scanner::{ScanEvent, ScanOptions, SharedOptions};
 
 enum UiEvent {
     Scan(ScanEvent),
@@ -32,9 +34,11 @@ async fn main() -> io::Result<()> {
     let domain = parse_arguments()?;
     let (ui_tx, mut ui_rx) = mpsc::unbounded_channel::<UiEvent>();
 
-    // Scanner: sends events into a ScanEvent channel which gets forwarded to the UI channel
+    // Scanner: sends events into a ScanEvent channel which gets forwarded to the UI channel.
+    // The options are shared so feature toggles (keys 1-4) take effect while scanning.
+    let options: SharedOptions = Arc::new(std::sync::RwLock::new(ScanOptions::default()));
     let (scan_tx, mut scan_rx) = mpsc::unbounded_channel::<ScanEvent>();
-    tokio::spawn(scanner::run_scan(domain.clone(), scan_tx));
+    tokio::spawn(scanner::run_scan(domain.clone(), Arc::clone(&options), scan_tx));
     let forward_tx = ui_tx.clone();
     tokio::spawn(async move {
         while let Some(event) = scan_rx.recv().await {
@@ -64,7 +68,7 @@ async fn main() -> io::Result<()> {
     });
 
     let mut terminal = ratatui::init();
-    let mut app = App::new(domain);
+    let mut app = App::new(domain, options);
     let result = run(&mut terminal, &mut app, &mut ui_rx).await;
     ratatui::restore();
     quit_flag.store(true, Ordering::SeqCst);

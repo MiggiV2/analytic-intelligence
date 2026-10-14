@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::fmt;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
 use rand::Rng;
@@ -12,7 +12,9 @@ use crate::crt;
 use crate::certspotter;
 use crate::ip_helper::is_local_ip;
 use crate::ipinfo::{get_ip_info, IpInfo};
+use crate::ptr;
 use crate::status::{check_web_status, Status};
+use crate::tls::{self, TlsInfo};
 
 // Be considerate: modest concurrency for DNS, HTTP and ipinfo.io requests
 const DNS_CONCURRENCY: usize = 25;
@@ -29,6 +31,7 @@ pub enum Phase {
     MailServer,
     Discovery,
     Resolving,
+    ReverseDns,
     Checking,
     Done,
 }
@@ -39,11 +42,42 @@ impl fmt::Display for Phase {
             Phase::MailServer => "Looking up mail server",
             Phase::Discovery => "Discovering subdomains",
             Phase::Resolving => "Resolving IP addresses",
+            Phase::ReverseDns => "Resolving reverse DNS",
             Phase::Checking => "Checking websites",
             Phase::Done => "Done",
         };
         write!(f, "{name}")
     }
+}
+
+/// Which checks the scan performs. Shared between the TUI (writes) and the
+/// scanner (reads), so the user can toggle features while a scan is running.
+/// Toggling off `tls_cert` / `reverse_dns` skips their network requests,
+/// `security_headers` / `tech` are extracted from responses the scan fetches
+/// anyway and only hide the corresponding columns.
+#[derive(Clone, Copy)]
+pub struct ScanOptions {
+    pub security_headers: bool,
+    pub tls_cert: bool,
+    pub tech: bool,
+    pub reverse_dns: bool,
+}
+
+impl Default for ScanOptions {
+    fn default() -> Self {
+        Self {
+            security_headers: true,
+            tls_cert: true,
+            tech: true,
+            reverse_dns: true,
+        }
+    }
+}
+
+pub type SharedOptions = Arc<RwLock<ScanOptions>>;
+
+fn current_options(options: &SharedOptions) -> ScanOptions {
+    *options.read().unwrap_or_else(|e| e.into_inner())
 }
 
 #[derive(Clone, Copy)]
@@ -74,13 +108,17 @@ pub enum ScanEvent {
     IpInfo { ip: String, info: IpInfo },
     /// HTTP check result for a domain (counts towards progress)
     HostChecked { domain: String, status: Status },
+    /// TLS certificate analysis for a domain (None when the probe failed)
+    TlsChecked { domain: String, info: Option<TlsInfo> },
+    /// Reverse DNS result for an IP address (None when no PTR record exists)
+    PtrRecord { ip: String, ptr: Option<String> },
     /// Domain will not be checked (e.g. resolves to a local IP, counts towards progress)
     HostSkipped { domain: String, reason: String },
     SourceError { source: Source, error: String },
     Finished,
 }
 
-pub async fn run_scan(domain: String, tx: mpsc::UnboundedSender<ScanEvent>) {
+pub async fn run_scan(domain: String, options: SharedOptions, tx: mpsc::UnboundedSender<ScanEvent>) {
     let _ = tx.send(ScanEvent::Phase(Phase::MailServer));
 
     let resolver = match create_resolver().await {
@@ -104,8 +142,13 @@ pub async fn run_scan(domain: String, tx: mpsc::UnboundedSender<ScanEvent>) {
     let _ = tx.send(ScanEvent::Phase(Phase::Resolving));
     let hosts = resolve_hosts(sub_domains, &resolver.get(), &tx).await;
 
+    if current_options(&options).reverse_dns {
+        let _ = tx.send(ScanEvent::Phase(Phase::ReverseDns));
+        lookup_ptr_records(&hosts, &resolver.get(), &tx).await;
+    }
+
     let _ = tx.send(ScanEvent::Phase(Phase::Checking));
-    check_hosts(&hosts, &tx).await;
+    check_hosts(&hosts, &options, &tx).await;
 
     let _ = tx.send(ScanEvent::Phase(Phase::Done));
     let _ = tx.send(ScanEvent::Finished);
@@ -280,28 +323,77 @@ fn dns_failed(
 /// Checks all hosts: ipinfo.io per unique IP and HTTPS status per domain.
 /// Domains on the same IP are checked sequentially with a randomized delay
 /// between requests, so per-IP traffic does not look like a scanner.
-async fn check_hosts(hosts: &[(String, String)], tx: &mpsc::UnboundedSender<ScanEvent>) {
+/// When enabled, each resolved host additionally gets a TLS probe.
+async fn check_hosts(
+    hosts: &[(String, String)],
+    options: &SharedOptions,
+    tx: &mpsc::UnboundedSender<ScanEvent>,
+) {
     fetch_ip_info(hosts, tx).await;
 
     let per_ip = group_by_ip(hosts);
     let semaphore = Arc::new(Semaphore::new(HTTP_CONCURRENCY));
     let mut tasks = Vec::with_capacity(per_ip.len());
 
-    for (_, domains) in per_ip {
+    for (ip, domains) in per_ip {
         let semaphore = Arc::clone(&semaphore);
         let tx = tx.clone();
+        let options = Arc::clone(options);
         tasks.push(tokio::spawn(async move {
             let _permit = semaphore.acquire_owned().await;
             for (index, domain) in domains.iter().enumerate() {
                 if index > 0 {
                     tokio::time::sleep(jittered_delay()).await;
                 }
+                let scan_options = current_options(&options);
                 let status = check_web_status(domain).await;
                 let _ = tx.send(ScanEvent::HostChecked {
                     domain: domain.clone(),
                     status,
                 });
+                // The TLS probe targets the same IP as the request before it
+                // and reads the certificate the server sends anyway
+                if scan_options.tls_cert && ip != "unknown" {
+                    let info = tls::check_tls(domain).await.ok();
+                    let _ = tx.send(ScanEvent::TlsChecked {
+                        domain: domain.clone(),
+                        info,
+                    });
+                }
             }
+        }));
+    }
+
+    for task in tasks {
+        let _ = task.await;
+    }
+}
+
+/// Reverse DNS for every unique IP the scan resolved, so the table can show
+/// the hostname behind an address (e.g. CDN edge or hosting server).
+async fn lookup_ptr_records(
+    hosts: &[(String, String)],
+    resolver: &Arc<Resolver>,
+    tx: &mpsc::UnboundedSender<ScanEvent>,
+) {
+    let unique_ips: HashSet<&str> = hosts
+        .iter()
+        .map(|(ip, _)| ip.as_str())
+        .filter(|ip| *ip != "unknown")
+        .collect();
+
+    let semaphore = Arc::new(Semaphore::new(DNS_CONCURRENCY));
+    let mut tasks = Vec::with_capacity(unique_ips.len());
+
+    for ip in unique_ips {
+        let semaphore = Arc::clone(&semaphore);
+        let resolver = Arc::clone(resolver);
+        let tx = tx.clone();
+        let ip = ip.to_string();
+        tasks.push(tokio::spawn(async move {
+            let _permit = semaphore.acquire_owned().await;
+            let ptr = ptr::lookup_ptr(&resolver, &ip).await;
+            let _ = tx.send(ScanEvent::PtrRecord { ip, ptr });
         }));
     }
 

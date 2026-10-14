@@ -9,6 +9,10 @@ edition = "2024"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "charset", "http2"] }
 serde = { version = "1.0", features = ["derive"] }
 trust-dns-resolver = { version = "0.23", features = ["dns-over-rustls"] }
+# Explicit ring provider so the TLS probe does not pull in aws-lc-rs
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
+x509-parser = "0.16"
 rand = "0.9"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync", "signal"] }
 ratatui = "0.30"
