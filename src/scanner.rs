@@ -1,7 +1,9 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::sync::Arc;
+use std::time::Duration;
 
+use rand::Rng;
 use tokio::sync::{mpsc, Semaphore};
 use trust_dns_resolver::config::{ResolverConfig, ResolverOpts};
 use trust_dns_resolver::Resolver;
@@ -14,8 +16,13 @@ use crate::status::{check_web_status, Status};
 
 // Be considerate: modest concurrency for DNS, HTTP and ipinfo.io requests
 const DNS_CONCURRENCY: usize = 25;
+/// Maximum number of IPs whose domains are checked in parallel
 const HTTP_CONCURRENCY: usize = 10;
 const IPINFO_CONCURRENCY: usize = 5;
+// Randomized delay between HTTP requests to the same IP,
+// so rate-based firewall rules do not flag the scan
+const HTTP_JITTER_MIN_MS: u64 = 500;
+const HTTP_JITTER_MAX_MS: u64 = 1800;
 
 #[derive(Clone, Copy, PartialEq)]
 pub enum Phase {
@@ -270,27 +277,57 @@ fn dns_failed(
     Some((String::from("unknown"), domain))
 }
 
-/// Checks all hosts: ipinfo.io per unique IP and HTTPS status per domain
+/// Checks all hosts: ipinfo.io per unique IP and HTTPS status per domain.
+/// Domains on the same IP are checked sequentially with a randomized delay
+/// between requests, so per-IP traffic does not look like a scanner.
 async fn check_hosts(hosts: &[(String, String)], tx: &mpsc::UnboundedSender<ScanEvent>) {
     fetch_ip_info(hosts, tx).await;
 
+    let per_ip = group_by_ip(hosts);
     let semaphore = Arc::new(Semaphore::new(HTTP_CONCURRENCY));
-    let mut tasks = Vec::with_capacity(hosts.len());
+    let mut tasks = Vec::with_capacity(per_ip.len());
 
-    for (_, domain) in hosts {
+    for (_, domains) in per_ip {
         let semaphore = Arc::clone(&semaphore);
         let tx = tx.clone();
-        let domain = domain.clone();
         tasks.push(tokio::spawn(async move {
             let _permit = semaphore.acquire_owned().await;
-            let status = check_web_status(&domain).await;
-            let _ = tx.send(ScanEvent::HostChecked { domain, status });
+            for (index, domain) in domains.iter().enumerate() {
+                if index > 0 {
+                    tokio::time::sleep(jittered_delay()).await;
+                }
+                let status = check_web_status(domain).await;
+                let _ = tx.send(ScanEvent::HostChecked {
+                    domain: domain.clone(),
+                    status,
+                });
+            }
         }));
     }
 
     for task in tasks {
         let _ = task.await;
     }
+}
+
+fn group_by_ip(hosts: &[(String, String)]) -> Vec<(String, Vec<String>)> {
+    let mut per_ip: Vec<(String, Vec<String>)> = Vec::new();
+    let mut index: HashMap<&str, usize> = HashMap::new();
+
+    for (ip, domain) in hosts {
+        let next = per_ip.len();
+        let position = *index.entry(ip.as_str()).or_insert(next);
+        if position == next {
+            per_ip.push((ip.clone(), Vec::new()));
+        }
+        per_ip[position].1.push(domain.clone());
+    }
+    per_ip
+}
+
+fn jittered_delay() -> Duration {
+    let millis = rand::rng().random_range(HTTP_JITTER_MIN_MS..=HTTP_JITTER_MAX_MS);
+    Duration::from_millis(millis)
 }
 
 async fn fetch_ip_info(hosts: &[(String, String)], tx: &mpsc::UnboundedSender<ScanEvent>) {

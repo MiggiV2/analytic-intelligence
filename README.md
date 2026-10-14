@@ -103,7 +103,9 @@ For each discovered subdomain, the tool sends carefully crafted HTTP/HTTPS reque
 requests:
 
 - Use common used user agent
-- Implement backoff between requests
+- Target the same IP strictly one after another, with a randomized delay of 0.5 to 1.8 seconds between requests,
+  so rate-based firewall rules do not flag the scan
+- Check different IPs in parallel, capped at 10 IPs at a time
 
 ## Contributing
 
