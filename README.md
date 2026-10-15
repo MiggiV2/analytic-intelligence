@@ -23,6 +23,7 @@ presented in a live-updating terminal UI.
 - **Server-Friendly Design**: Uses rate limiting and considerate scanning techniques to minimize impact on target
   servers
 - **Comprehensive Reporting**: Generates clear reports showing the relationships between domains, IPs, and availability
+- **Export**: Saves the results as JSON (machine-readable) and Markdown (human-readable) for later review (key `e`)
 
 ## Installation
 
@@ -76,7 +77,7 @@ The terminal switches into a full-screen TUI that shows the scan progress live:
 │ DOWN    traefik-hetzner.mymigg…  78.46.191.125  AS24940 Hetzner Online GmbH │
 │ ...                                                                         │
 └─────────────────────────────────────────────────────────────────────────────┘
- q: quit  -  j/k: scroll  -  f: follow    toggle: 1:sec-hdrs 2:tls 3:tech 4:ptr
+ q: quit  -  j/k: scroll  -  f: follow  -  e: export    toggle: 1:sec-hdrs 2:tls 3:tech 4:ptr
 ```
 
 With all features enabled the results table also shows a PTR column (reverse DNS per IP),
@@ -96,10 +97,26 @@ a Tech column (detected technologies) and a Sec column (present security headers
 | `2`             | Toggle TLS certificate analysis |
 | `3`             | Toggle tech detection column |
 | `4`             | Toggle reverse DNS column |
+| `e`             | Export results as JSON + Markdown |
 
 Toggles take effect while the scan is running: turning off TLS analysis (`2`) or reverse DNS (`4`)
 skips their network requests from that point on. Security headers and tech detection piggyback on
 the HTTP responses the scan fetches anyway, so their toggles only hide the corresponding columns.
+
+### Export
+
+Pressing `e` writes two files into the current directory, named `<domain>-<YYYYMMDD-HHMM>`:
+
+- **`.json`**: the full result for tools such as `jq`. It contains the domain, scan timestamp, source, mail server and,
+  per host, the state (`up`/`down`/`skipped`/`pending`), the skip reason, IP, PTR, location, title, tech, security header score and
+  TLS certificate details.
+- **`.md`**: a readable report with a summary, an overview table and a details section for every host that was not
+  skipped. Data taken from the scanned hosts (page titles, PTR records, certificate issuers) is Markdown-escaped, so
+  it cannot inject links, images or HTML into the report.
+
+Exporting is possible at any time. A report exported before the scan finished is marked as incomplete
+(`"complete": false` in JSON, a note at the top of the Markdown). Exporting again within the same minute overwrites
+the previous files.
 
 ## How It Works
 

@@ -1,4 +1,7 @@
 use std::collections::HashMap;
+use std::path::PathBuf;
+
+use chrono::{DateTime, FixedOffset, Local};
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::Frame;
@@ -7,6 +10,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Cell, Gauge, Paragraph, Row, Table, TableState};
 
+use crate::report::{self, HostReport, HostState, ScanReport, SecurityHeaders, TlsReport};
 use crate::scanner::{Phase, ScanEvent, ScanOptions, SharedOptions, Source};
 use crate::status::SecurityReport;
 use crate::tls::TlsInfo;
@@ -95,6 +99,7 @@ pub struct App {
     follow: bool,
     options: ScanOptions,
     shared: SharedOptions,
+    export_dir: PathBuf,
     pub should_quit: bool,
 }
 
@@ -120,6 +125,7 @@ impl App {
             follow: true,
             options,
             shared,
+            export_dir: PathBuf::from("."),
             should_quit: false,
         }
     }
@@ -215,7 +221,63 @@ impl App {
             KeyCode::Char('2') => self.toggle_feature(Feature::TlsCert),
             KeyCode::Char('3') => self.toggle_feature(Feature::Tech),
             KeyCode::Char('4') => self.toggle_feature(Feature::ReverseDns),
+            KeyCode::Char('e') => self.export(),
             _ => {}
+        }
+    }
+
+    pub fn report(&self, scanned_at: DateTime<FixedOffset>) -> ScanReport {
+        ScanReport {
+            domain: self.domain.clone(),
+            scanned_at,
+            complete: self.phase == Phase::Done,
+            source: self.source.map(|source| source.to_string()),
+            mail_server: self.mail_server.clone(),
+            hosts: self
+                .rows
+                .iter()
+                .map(|entry| self.host_report(entry))
+                .collect(),
+        }
+    }
+
+    fn host_report(&self, entry: &HostEntry) -> HostReport {
+        let (state, skip_reason) = match &entry.state {
+            EntryState::Pending => (HostState::Pending, None),
+            EntryState::Online => (HostState::Up, None),
+            EntryState::Offline => (HostState::Down, None),
+            EntryState::Skipped(reason) => (HostState::Skipped, Some(reason.clone())),
+        };
+        HostReport {
+            domain: entry.domain.clone(),
+            state,
+            skip_reason,
+            ip: non_empty(&entry.ip),
+            ptr: self.ip_ptr.get(&entry.ip).cloned().flatten(),
+            location: non_empty(&entry.location),
+            title: entry.title.clone(),
+            tech: entry.tech.clone(),
+            security_headers: entry.security.as_ref().map(|sec| SecurityHeaders {
+                present: sec.present,
+                total: sec.total,
+            }),
+            tls: entry.tls_info.as_ref().map(|tls| TlsReport {
+                issuer: tls.issuer.clone(),
+                days_left: tls.days_left,
+                self_signed: tls.self_signed,
+            }),
+        }
+    }
+
+    fn export(&mut self) {
+        let report = self.report(Local::now().fixed_offset());
+        match report::write(&report, &self.export_dir) {
+            Ok((json, md)) => self.push_log(format!(
+                "Exported to {} and {}",
+                json.display(),
+                md.display()
+            )),
+            Err(error) => self.push_log(format!("Export failed: {error}")),
         }
     }
 
@@ -428,7 +490,7 @@ impl App {
     fn render_footer(&self, frame: &mut Frame, area: Rect) {
         let gray = Style::default().fg(Color::DarkGray);
         let mut spans = vec![
-            Span::styled(" q: quit  -  j/k: scroll  -  f: follow", gray),
+            Span::styled(" q: quit  -  j/k: scroll  -  f: follow  -  e: export", gray),
             Span::raw("    toggle: "),
         ];
         for (label, on) in [
@@ -449,6 +511,10 @@ impl App {
         }
         frame.render_widget(Paragraph::new(Line::from(spans)), area);
     }
+}
+
+fn non_empty(value: &str) -> Option<String> {
+    (!value.is_empty()).then(|| value.to_string())
 }
 
 fn ptr_cell(ip_ptr: &HashMap<String, Option<String>>, ip: &str) -> String {
@@ -534,5 +600,201 @@ fn security_cell(entry: &HostEntry) -> Cell<'_> {
             ))
         }
         None => Cell::from(""),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::{Arc, RwLock};
+
+    use crossterm::event::KeyEventKind;
+
+    use super::*;
+    use crate::ipinfo::IpInfo;
+    use crate::status::Status;
+
+    fn scanned_at() -> DateTime<FixedOffset> {
+        DateTime::parse_from_rfc3339("2026-10-15T14:03:27+02:00").unwrap()
+    }
+
+    fn scanned_app() -> App {
+        let mut app = App::new(
+            "example.com".to_string(),
+            Arc::new(RwLock::new(ScanOptions::default())),
+        );
+        for event in [
+            ScanEvent::MailServer("mx.example.com".to_string()),
+            ScanEvent::Discovery {
+                count: 3,
+                source: Source::CrtSh,
+            },
+            ScanEvent::IpInfo {
+                ip: "93.184.215.14".to_string(),
+                info: IpInfo {
+                    org: "Edgecast".to_string(),
+                    country: "US".to_string(),
+                    city: "Los Angeles".to_string(),
+                },
+            },
+            ScanEvent::HostResolved {
+                domain: "www.example.com".to_string(),
+                ip: "93.184.215.14".to_string(),
+            },
+            ScanEvent::HostResolved {
+                domain: "old.example.com".to_string(),
+                ip: "unknown".to_string(),
+            },
+            ScanEvent::HostSkipped {
+                domain: "intranet.example.com".to_string(),
+                reason: "local address".to_string(),
+            },
+            ScanEvent::PtrRecord {
+                ip: "93.184.215.14".to_string(),
+                ptr: Some("edge.example.net".to_string()),
+            },
+            ScanEvent::HostChecked {
+                domain: "www.example.com".to_string(),
+                status: Status {
+                    online: true,
+                    title: Some("Example".to_string()),
+                    tech: vec!["nginx".to_string()],
+                    security: Some(SecurityReport {
+                        present: 3,
+                        total: 5,
+                    }),
+                },
+            },
+            ScanEvent::TlsChecked {
+                domain: "www.example.com".to_string(),
+                info: Some(TlsInfo {
+                    issuer: "CN=R11".to_string(),
+                    days_left: 66,
+                    self_signed: false,
+                }),
+            },
+            ScanEvent::HostChecked {
+                domain: "old.example.com".to_string(),
+                status: Status {
+                    online: false,
+                    title: Some("connection refused".to_string()),
+                    tech: Vec::new(),
+                    security: None,
+                },
+            },
+            ScanEvent::Phase(Phase::Done),
+        ] {
+            app.handle_scan_event(event);
+        }
+        app
+    }
+
+    #[test]
+    fn report_reflects_the_scan_results() {
+        // given
+        let app = scanned_app();
+
+        // when
+        let report = app.report(scanned_at());
+
+        // then
+        assert_eq!(report.domain, "example.com");
+        assert_eq!(report.scanned_at, scanned_at());
+        assert!(report.complete);
+        assert_eq!(report.source.as_deref(), Some("crt.sh"));
+        assert_eq!(report.mail_server.as_deref(), Some("mx.example.com"));
+        assert_eq!(
+            report.hosts,
+            vec![
+                HostReport {
+                    domain: "www.example.com".to_string(),
+                    state: HostState::Up,
+                    skip_reason: None,
+                    ip: Some("93.184.215.14".to_string()),
+                    ptr: Some("edge.example.net".to_string()),
+                    location: Some("Edgecast, US, Los Angeles".to_string()),
+                    title: Some("Example".to_string()),
+                    tech: vec!["nginx".to_string()],
+                    security_headers: Some(SecurityHeaders {
+                        present: 3,
+                        total: 5
+                    }),
+                    tls: Some(TlsReport {
+                        issuer: "CN=R11".to_string(),
+                        days_left: 66,
+                        self_signed: false,
+                    }),
+                },
+                HostReport {
+                    domain: "old.example.com".to_string(),
+                    state: HostState::Down,
+                    skip_reason: None,
+                    ip: Some("unknown".to_string()),
+                    ptr: None,
+                    location: None,
+                    title: Some("connection refused".to_string()),
+                    tech: Vec::new(),
+                    security_headers: None,
+                    tls: None,
+                },
+                HostReport {
+                    domain: "intranet.example.com".to_string(),
+                    state: HostState::Skipped,
+                    skip_reason: Some("local address".to_string()),
+                    ip: None,
+                    ptr: None,
+                    location: None,
+                    title: None,
+                    tech: Vec::new(),
+                    security_headers: None,
+                    tls: None,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn report_is_incomplete_while_scanning() {
+        // given
+        let mut app = scanned_app();
+        app.handle_scan_event(ScanEvent::Phase(Phase::Checking));
+
+        // when
+        let report = app.report(scanned_at());
+
+        // then
+        assert!(!report.complete);
+    }
+
+    #[test]
+    fn pressing_e_exports_json_and_markdown() {
+        // given
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = scanned_app();
+        app.export_dir = dir.path().to_path_buf();
+
+        // when
+        app.handle_key(KeyEvent::new_with_kind(
+            KeyCode::Char('e'),
+            KeyModifiers::NONE,
+            KeyEventKind::Press,
+        ));
+
+        // then
+        let mut extensions: Vec<String> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .map(|entry| {
+                let path = entry.unwrap().path();
+                assert!(
+                    path.file_name()
+                        .unwrap()
+                        .to_string_lossy()
+                        .starts_with("example.com-")
+                );
+                path.extension().unwrap().to_string_lossy().to_string()
+            })
+            .collect();
+        extensions.sort();
+        assert_eq!(extensions, vec!["json", "md"]);
+        assert!(app.logs.last().unwrap().starts_with("Exported to "));
     }
 }

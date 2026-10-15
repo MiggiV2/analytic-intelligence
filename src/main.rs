@@ -14,6 +14,7 @@ mod crt;
 mod ip_helper;
 mod ipinfo;
 mod ptr;
+mod report;
 mod scanner;
 mod status;
 mod tls;
