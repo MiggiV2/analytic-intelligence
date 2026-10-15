@@ -17,3 +17,7 @@ rand = "0.9"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync", "signal"] }
 ratatui = "0.30"
 crossterm = "0.29"
+
+[dev-dependencies]
+serde_json = "1.0.154"
+wiremock = "0.6.5"

@@ -109,6 +109,8 @@ Analytic Intelligence queries certificate transparency logs to discover subdomai
 source; if it is unavailable (which happens regularly), the tool automatically falls back to
 [SSLMate Cert Spotter](https://sslmate.com/certspotter) (keyless free tier, indexes 40+ CT logs, subdomains of any
 depth via `include_subdomains=true`, paginated via `after=<id>` with a conservative rate of one request per second).
+On HTTP 429 it waits for a short `Retry-After` (≤ 30 s, up to 3 retries); if the limit persists, the subdomains
+collected from the pages fetched so far are kept.
 Both methods are passive and don't require sending traffic to the target domain, making them highly stealthy
 and efficient.
 
