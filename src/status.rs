@@ -1,6 +1,7 @@
 use std::time::Duration;
 
 use reqwest::Client;
+use reqwest::StatusCode;
 use reqwest::header::{HeaderMap, SET_COOKIE};
 
 static CHROME_USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36";
@@ -56,28 +57,29 @@ pub async fn check_web_status(domain: &str) -> Status {
 async fn handle_response(response: reqwest::Response) -> Status {
     let status_code = response.status();
     let headers = response.headers().clone();
-
-    let (online, title) = if status_code.is_success() {
-        if let Ok(text) = response.text().await
-            && let Some(title) = extract_html_title(text)
-        {
-            (true, Some(title))
-        } else {
-            (true, None)
-        }
-    } else if status_code.is_client_error() {
-        (false, Some(format!("Client error: {status_code}")))
-    } else if status_code.is_server_error() {
-        (false, Some(format!("Server error: {status_code}")))
-    } else {
-        (false, Some(status_code.to_string()))
-    };
+    let body = response.text().await.ok();
+    let (online, title) = classify(status_code, body.as_deref());
 
     Status {
         online,
         title,
         tech: detect_tech(&headers),
         security: Some(analyze_security_headers(&headers)),
+    }
+}
+
+/// A host counts as up when the server answered at all: every status code,
+/// even 404 or 500, proves a web service is listening behind the name.
+/// Only the absence of a response (connection refused, timeout, TLS error)
+/// means down.
+fn classify(status_code: StatusCode, body: Option<&str>) -> (bool, Option<String>) {
+    if status_code.is_success() {
+        (
+            true,
+            body.and_then(|text| extract_html_title(text.to_string())),
+        )
+    } else {
+        (true, Some(status_code.to_string()))
     }
 }
 
@@ -181,5 +183,50 @@ fn extract_html_title(html: String) -> Option<String> {
         Some(html[content_start_idx..content_end_idx].trim().to_string())
     } else {
         None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use reqwest::StatusCode;
+
+    #[test]
+    fn any_http_response_counts_as_up() {
+        for code in [
+            StatusCode::OK,
+            StatusCode::MOVED_PERMANENTLY,
+            StatusCode::UNAUTHORIZED,
+            StatusCode::FORBIDDEN,
+            StatusCode::NOT_FOUND,
+            StatusCode::TOO_MANY_REQUESTS,
+            StatusCode::INTERNAL_SERVER_ERROR,
+            StatusCode::BAD_GATEWAY,
+        ] {
+            let (online, _) = classify(code, None);
+            assert!(online, "{code} should count as up");
+        }
+    }
+
+    #[test]
+    fn extracts_title_from_success_body() {
+        let html = "<html><head><title> Example </title></head></html>";
+        let (online, title) = classify(StatusCode::OK, Some(html));
+        assert!(online);
+        assert_eq!(title.as_deref(), Some("Example"));
+    }
+
+    #[test]
+    fn shows_status_code_as_title_when_body_has_no_title() {
+        let (online, title) = classify(StatusCode::NOT_FOUND, None);
+        assert!(online);
+        assert_eq!(title.as_deref(), Some("404 Not Found"));
+    }
+
+    #[test]
+    fn success_without_title_tag_has_no_title() {
+        let (online, title) = classify(StatusCode::OK, Some("no html here"));
+        assert!(online);
+        assert_eq!(title, None);
     }
 }
