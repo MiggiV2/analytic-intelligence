@@ -96,6 +96,13 @@ pub fn write(report: &ScanReport, dir: &Path) -> io::Result<(PathBuf, PathBuf)> 
     Ok((json_path, md_path))
 }
 
+pub fn read(path: &Path) -> Result<ScanReport, String> {
+    let content = std::fs::read_to_string(path)
+        .map_err(|e| format!("could not read {}: {e}", path.display()))?;
+    serde_json::from_str(&content)
+        .map_err(|e| format!("{} is not a valid scan report: {e}", path.display()))
+}
+
 fn summary(report: &ScanReport) -> String {
     let count = |state: HostState| report.hosts.iter().filter(|h| h.state == state).count();
     let mut lines = vec![format!(
@@ -391,6 +398,46 @@ mod tests {
         assert!(
             markdown.contains("- **TLS:** CN=expired.example.com, expired 3 days ago, self-signed")
         );
+    }
+
+    #[test]
+    fn reads_a_written_report_back() {
+        // given
+        let dir = tempfile::tempdir().unwrap();
+        let report = sample_report();
+        let (json_path, _) = write(&report, dir.path()).unwrap();
+
+        // when
+        let loaded = read(&json_path);
+
+        // then
+        assert_eq!(loaded, Ok(report));
+    }
+
+    #[test]
+    fn reading_invalid_json_names_the_file() {
+        // given
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("broken.json");
+        std::fs::write(&path, "{ not json").unwrap();
+
+        // when
+        let error = read(&path).unwrap_err();
+
+        // then
+        assert!(error.contains("broken.json"), "{error}");
+    }
+
+    #[test]
+    fn reading_a_missing_file_names_the_file() {
+        // given
+        let path = Path::new("/nonexistent/scan.json");
+
+        // when
+        let error = read(path).unwrap_err();
+
+        // then
+        assert!(error.contains("/nonexistent/scan.json"), "{error}");
     }
 
     #[test]

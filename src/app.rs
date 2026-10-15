@@ -100,6 +100,7 @@ pub struct App {
     options: ScanOptions,
     shared: SharedOptions,
     export_dir: PathBuf,
+    loaded_scanned_at: Option<DateTime<FixedOffset>>,
     pub should_quit: bool,
 }
 
@@ -126,6 +127,7 @@ impl App {
             options,
             shared,
             export_dir: PathBuf::from("."),
+            loaded_scanned_at: None,
             should_quit: false,
         }
     }
@@ -226,6 +228,60 @@ impl App {
         }
     }
 
+    pub fn from_report(report: ScanReport, shared: SharedOptions) -> Self {
+        let mut app = Self::new(report.domain, shared);
+        app.phase = if report.complete {
+            Phase::Done
+        } else {
+            Phase::Checking
+        };
+        app.source = report.source.as_deref().and_then(Source::from_name);
+        app.mail_server = report.mail_server;
+        app.discovered = report.hosts.len();
+        app.loaded_scanned_at = Some(report.scanned_at);
+        for host in report.hosts {
+            app.push_loaded_host(host);
+        }
+        app.update_selection();
+        app
+    }
+
+    fn push_loaded_host(&mut self, host: HostReport) {
+        let ip = host.ip.unwrap_or_default();
+        if let Some(ptr) = host.ptr {
+            self.ip_ptr.insert(ip.clone(), Some(ptr));
+        }
+        let mut entry = HostEntry::new(host.domain, ip, host.location.unwrap_or_default());
+        entry.state = match host.state {
+            HostState::Up => EntryState::Online,
+            HostState::Down => EntryState::Offline,
+            HostState::Skipped => EntryState::Skipped(host.skip_reason.unwrap_or_default()),
+            HostState::Pending => EntryState::Pending,
+        };
+        match entry.state {
+            EntryState::Online => self.online += 1,
+            EntryState::Offline => self.offline += 1,
+            EntryState::Skipped(_) => self.skipped += 1,
+            EntryState::Pending => {}
+        }
+        if entry.state != EntryState::Pending {
+            self.done += 1;
+        }
+        entry.title = host.title;
+        entry.tech = host.tech;
+        entry.security = host.security_headers.map(|sec| SecurityReport {
+            present: sec.present,
+            total: sec.total,
+        });
+        entry.tls_info = host.tls.map(|tls| TlsInfo {
+            issuer: tls.issuer,
+            days_left: tls.days_left,
+            self_signed: tls.self_signed,
+        });
+        self.row_index.insert(entry.domain.clone(), self.rows.len());
+        self.rows.push(entry);
+    }
+
     pub fn report(&self, scanned_at: DateTime<FixedOffset>) -> ScanReport {
         ScanReport {
             domain: self.domain.clone(),
@@ -270,7 +326,10 @@ impl App {
     }
 
     fn export(&mut self) {
-        let report = self.report(Local::now().fixed_offset());
+        let scanned_at = self
+            .loaded_scanned_at
+            .unwrap_or_else(|| Local::now().fixed_offset());
+        let report = self.report(scanned_at);
         match report::write(&report, &self.export_dir) {
             Ok((json, md)) => self.push_log(format!(
                 "Exported to {} and {}",
@@ -338,11 +397,33 @@ impl App {
             Span::raw("  "),
             Span::styled(self.domain.clone(), Style::default().fg(Color::Cyan)),
         ]);
-        let second = Line::from(vec![
-            Span::styled("Phase: ", Style::default().fg(Color::DarkGray)),
-            Span::styled(self.phase.to_string(), Style::default().fg(Color::Yellow)),
-            Span::raw(format!("  -  {} subdomains{source_info}", self.discovered)),
-        ]);
+        let status = match self.loaded_scanned_at {
+            Some(scanned_at) => vec![
+                Span::styled("Loaded report: ", Style::default().fg(Color::DarkGray)),
+                Span::styled(
+                    format!(
+                        "scanned {}{}",
+                        scanned_at.format("%Y-%m-%d %H:%M"),
+                        if self.phase == Phase::Done {
+                            ""
+                        } else {
+                            " (incomplete)"
+                        }
+                    ),
+                    Style::default().fg(Color::Yellow),
+                ),
+            ],
+            None => vec![
+                Span::styled("Phase: ", Style::default().fg(Color::DarkGray)),
+                Span::styled(self.phase.to_string(), Style::default().fg(Color::Yellow)),
+            ],
+        };
+        let mut second = status;
+        second.push(Span::raw(format!(
+            "  -  {} subdomains{source_info}",
+            self.discovered
+        )));
+        let second = Line::from(second);
         let third = match &self.mail_server {
             Some(mail) => Line::from(vec![
                 Span::styled("Mail server: ", Style::default().fg(Color::DarkGray)),
@@ -750,6 +831,62 @@ mod tests {
                 },
             ]
         );
+    }
+
+    #[test]
+    fn loaded_report_round_trips_through_the_app() {
+        // given
+        let original = scanned_app().report(scanned_at());
+
+        // when
+        let app = App::from_report(
+            original.clone(),
+            Arc::new(RwLock::new(ScanOptions::default())),
+        );
+
+        // then
+        assert_eq!(app.report(scanned_at()), original);
+        assert_eq!(app.online, 1);
+        assert_eq!(app.offline, 1);
+        assert_eq!(app.skipped, 1);
+        assert_eq!(app.done, 3);
+        assert_eq!(app.discovered, 3);
+    }
+
+    #[test]
+    fn loaded_incomplete_report_stays_incomplete() {
+        // given
+        let mut original = scanned_app().report(scanned_at());
+        original.complete = false;
+
+        // when
+        let app = App::from_report(
+            original.clone(),
+            Arc::new(RwLock::new(ScanOptions::default())),
+        );
+
+        // then
+        assert_eq!(app.report(scanned_at()), original);
+    }
+
+    #[test]
+    fn exporting_a_loaded_report_keeps_its_original_timestamp() {
+        // given
+        let dir = tempfile::tempdir().unwrap();
+        let original = scanned_app().report(scanned_at());
+        let mut app = App::from_report(original, Arc::new(RwLock::new(ScanOptions::default())));
+        app.export_dir = dir.path().to_path_buf();
+
+        // when
+        app.handle_key(KeyEvent::new_with_kind(
+            KeyCode::Char('e'),
+            KeyModifiers::NONE,
+            KeyEventKind::Press,
+        ));
+
+        // then
+        assert!(dir.path().join("example.com-20261015-1403.json").exists());
+        assert!(dir.path().join("example.com-20261015-1403.md").exists());
     }
 
     #[test]

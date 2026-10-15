@@ -23,7 +23,8 @@ presented in a live-updating terminal UI.
 - **Server-Friendly Design**: Uses rate limiting and considerate scanning techniques to minimize impact on target
   servers
 - **Comprehensive Reporting**: Generates clear reports showing the relationships between domains, IPs, and availability
-- **Export**: Saves the results as JSON (machine-readable) and Markdown (human-readable) for later review (key `e`)
+- **Export**: Saves the results as JSON (machine-readable) and Markdown (human-readable) for later review (key `e`);
+  `--open <report.json>` shows an exported report in the TUI again
 
 ## Installation
 
@@ -60,6 +61,9 @@ cargo install --git https://code.mymiggi.de/Miggi/analytic-intelligence.git
 ```bash
 # Scan a domain
 analytic-intelligence example.com
+
+# Reopen an exported report in the TUI
+analytic-intelligence --open example.com-20261015-1403.json
 ```
 
 The terminal switches into a full-screen TUI that shows the scan progress live:
@@ -117,6 +121,10 @@ Pressing `e` writes two files into the current directory, named `<domain>-<YYYYM
 Exporting is possible at any time. A report exported before the scan finished is marked as incomplete
 (`"complete": false` in JSON, a note at the top of the Markdown). Exporting again within the same minute overwrites
 the previous files.
+
+`--open <report.json>` loads an exported JSON report into the TUI without scanning again. The header shows when the
+report was scanned. Pressing `e` there exports it again under its original timestamp, e.g. to regenerate the
+Markdown file.
 
 ## How It Works
 

@@ -86,6 +86,14 @@ pub enum Source {
     CertSpotter,
 }
 
+impl Source {
+    pub fn from_name(name: &str) -> Option<Source> {
+        [Source::CrtSh, Source::CertSpotter]
+            .into_iter()
+            .find(|source| source.to_string() == name)
+    }
+}
+
 impl fmt::Display for Source {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let name = match self {
