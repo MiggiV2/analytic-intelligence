@@ -1,11 +1,11 @@
 use std::env;
 use std::io;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use crossterm::event::{self, Event as CrosstermEvent, KeyEvent, KeyEventKind};
-use ratatui::{backend::CrosstermBackend, Terminal};
+use ratatui::{Terminal, backend::CrosstermBackend};
 use tokio::sync::mpsc;
 
 mod app;
@@ -38,7 +38,11 @@ async fn main() -> io::Result<()> {
     // The options are shared so feature toggles (keys 1-4) take effect while scanning.
     let options: SharedOptions = Arc::new(std::sync::RwLock::new(ScanOptions::default()));
     let (scan_tx, mut scan_rx) = mpsc::unbounded_channel::<ScanEvent>();
-    tokio::spawn(scanner::run_scan(domain.clone(), Arc::clone(&options), scan_tx));
+    tokio::spawn(scanner::run_scan(
+        domain.clone(),
+        Arc::clone(&options),
+        scan_tx,
+    ));
     let forward_tx = ui_tx.clone();
     tokio::spawn(async move {
         while let Some(event) = scan_rx.recv().await {
@@ -52,18 +56,20 @@ async fn main() -> io::Result<()> {
     let quit_flag = Arc::new(AtomicBool::new(false));
     let key_tx = ui_tx.clone();
     let key_flag = Arc::clone(&quit_flag);
-    let key_task = tokio::task::spawn_blocking(move || loop {
-        if key_flag.load(Ordering::Relaxed) {
-            break;
-        }
-        if !event::poll(KEY_POLL_INTERVAL).unwrap_or(false) {
-            continue;
-        }
-        if let Ok(CrosstermEvent::Key(key)) = event::read()
-            && key.kind == KeyEventKind::Press
-            && key_tx.send(UiEvent::Key(key)).is_err()
-        {
-            break;
+    let key_task = tokio::task::spawn_blocking(move || {
+        loop {
+            if key_flag.load(Ordering::Relaxed) {
+                break;
+            }
+            if !event::poll(KEY_POLL_INTERVAL).unwrap_or(false) {
+                continue;
+            }
+            if let Ok(CrosstermEvent::Key(key)) = event::read()
+                && key.kind == KeyEventKind::Press
+                && key_tx.send(UiEvent::Key(key)).is_err()
+            {
+                break;
+            }
         }
     });
 

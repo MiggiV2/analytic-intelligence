@@ -1,11 +1,11 @@
 use std::collections::HashMap;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Cell, Gauge, Paragraph, Row, Table, TableState};
-use ratatui::Frame;
 
 use crate::scanner::{Phase, ScanEvent, ScanOptions, SharedOptions, Source};
 use crate::status::SecurityReport;
@@ -139,11 +139,7 @@ impl App {
                 self.push_log(format!("{source} failed: {error}"));
             }
             ScanEvent::HostResolved { domain, ip } => {
-                let location = self
-                    .ip_locations
-                    .get(&ip)
-                    .cloned()
-                    .unwrap_or_default();
+                let location = self.ip_locations.get(&ip).cloned().unwrap_or_default();
                 self.row_index.insert(domain.clone(), self.rows.len());
                 self.rows.push(HostEntry::new(domain, ip, location));
             }
@@ -283,10 +279,7 @@ impl App {
         let second = Line::from(vec![
             Span::styled("Phase: ", Style::default().fg(Color::DarkGray)),
             Span::styled(self.phase.to_string(), Style::default().fg(Color::Yellow)),
-            Span::raw(format!(
-                "  -  {} subdomains{source_info}",
-                self.discovered
-            )),
+            Span::raw(format!("  -  {} subdomains{source_info}", self.discovered)),
         ]);
         let third = match &self.mail_server {
             Some(mail) => Line::from(vec![
@@ -299,9 +292,8 @@ impl App {
             )),
         };
 
-        let paragraph = Paragraph::new(vec![first, second, third]).block(
-            Block::bordered().title(" Scan "),
-        );
+        let paragraph =
+            Paragraph::new(vec![first, second, third]).block(Block::bordered().title(" Scan "));
         frame.render_widget(paragraph, area);
     }
 
@@ -400,7 +392,10 @@ impl App {
             if self.options.security_headers {
                 cells.push(security_cell(entry));
             }
-            cells.push(Cell::from(Span::styled(title, Style::default().fg(Color::DarkGray))));
+            cells.push(Cell::from(Span::styled(
+                title,
+                Style::default().fg(Color::DarkGray),
+            )));
 
             Row::new(cells)
         });

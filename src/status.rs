@@ -1,7 +1,7 @@
 use std::time::Duration;
 
-use reqwest::header::{HeaderMap, SET_COOKIE};
 use reqwest::Client;
+use reqwest::header::{HeaderMap, SET_COOKIE};
 
 static CHROME_USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36";
 // Source: https://www.useragents.me/#latest-windows-desktop-useragents

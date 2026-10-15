@@ -4,16 +4,16 @@ use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
 use rand::Rng;
-use tokio::sync::{mpsc, Semaphore};
-use trust_dns_resolver::config::{ResolverConfig, ResolverOpts};
+use tokio::sync::{Semaphore, mpsc};
 use trust_dns_resolver::Resolver;
+use trust_dns_resolver::config::{ResolverConfig, ResolverOpts};
 
-use crate::crt;
 use crate::certspotter;
+use crate::crt;
 use crate::ip_helper::is_local_ip;
-use crate::ipinfo::{get_ip_info, IpInfo};
+use crate::ipinfo::{IpInfo, get_ip_info};
 use crate::ptr;
-use crate::status::{check_web_status, Status};
+use crate::status::{Status, check_web_status};
 use crate::tls::{self, TlsInfo};
 
 // Be considerate: modest concurrency for DNS, HTTP and ipinfo.io requests
@@ -101,24 +101,52 @@ pub enum ScanEvent {
     Log(String),
     MailServer(String),
     /// Total number of discovered subdomains and the source that provided them
-    Discovery { count: usize, source: Source },
+    Discovery {
+        count: usize,
+        source: Source,
+    },
     /// A row for the table: domain got resolved to an IP address
-    HostResolved { domain: String, ip: String },
+    HostResolved {
+        domain: String,
+        ip: String,
+    },
     /// ipinfo.io data for an IP address
-    IpInfo { ip: String, info: IpInfo },
+    IpInfo {
+        ip: String,
+        info: IpInfo,
+    },
     /// HTTP check result for a domain (counts towards progress)
-    HostChecked { domain: String, status: Status },
+    HostChecked {
+        domain: String,
+        status: Status,
+    },
     /// TLS certificate analysis for a domain (None when the probe failed)
-    TlsChecked { domain: String, info: Option<TlsInfo> },
+    TlsChecked {
+        domain: String,
+        info: Option<TlsInfo>,
+    },
     /// Reverse DNS result for an IP address (None when no PTR record exists)
-    PtrRecord { ip: String, ptr: Option<String> },
+    PtrRecord {
+        ip: String,
+        ptr: Option<String>,
+    },
     /// Domain will not be checked (e.g. resolves to a local IP, counts towards progress)
-    HostSkipped { domain: String, reason: String },
-    SourceError { source: Source, error: String },
+    HostSkipped {
+        domain: String,
+        reason: String,
+    },
+    SourceError {
+        source: Source,
+        error: String,
+    },
     Finished,
 }
 
-pub async fn run_scan(domain: String, options: SharedOptions, tx: mpsc::UnboundedSender<ScanEvent>) {
+pub async fn run_scan(
+    domain: String,
+    options: SharedOptions,
+    tx: mpsc::UnboundedSender<ScanEvent>,
+) {
     let _ = tx.send(ScanEvent::Phase(Phase::MailServer));
 
     let resolver = match create_resolver().await {
@@ -201,7 +229,9 @@ async fn lookup_mail_server(
     let resolver = resolver.get();
     let domain = domain.to_string();
     let result = tokio::task::spawn_blocking(move || {
-        resolver.mx_lookup(&domain).map(|res| res.iter().next().map(|mx| mx.to_string()))
+        resolver
+            .mx_lookup(&domain)
+            .map(|res| res.iter().next().map(|mx| mx.to_string()))
     })
     .await;
 
